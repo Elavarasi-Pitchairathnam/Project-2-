@@ -1,0 +1,233 @@
+---
+title: "Project 2"
+author: "Elavarasi"
+date: "2023-03-18"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+#install.packages("caretEnsemble")
+library(caretEnsemble)
+library(tidyr)
+library(rpart)
+library(plyr)
+library(readr)
+library(dplyr)
+library(caret)
+library(Hmisc)
+```
+
+```{r}
+# Load the breast cancer dataset
+require(mlbench)
+data(BreastCancer)
+```
+
+
+```{r}
+# summarise the data
+summary(BreastCancer)
+
+# checking number of missing values in each row
+colSums(sapply(BreastCancer,is.na))
+
+
+# checking the data types of each columns
+sapply(BreastCancer,class)
+
+# drop records with missing data
+df_dropna = BreastCancer[complete.cases(BreastCancer),]
+
+# rename target variable
+names(df_dropna)[11] = "label"
+
+```
+
+```{r}
+# Split the data into training and testing sets
+set.seed(123)
+train_index <- sample(1:nrow(df_dropna), 0.7 * nrow(df_dropna))
+
+# train data
+train_data <- df_dropna[train_index, ]
+
+# test data
+test_data <- df_dropna[-train_index, ]
+
+```
+
+
+
+# Create four different classifiers
+```{r}
+# 1. Logistic regression
+
+Logistic_model <- glm(label ~ . , data = train_data[,2:11], family = "binomial")
+
+summary(Logistic_model)
+
+Logistic_predictions <- predict(Logistic_model, newdata = test_data[,2:10], type = "response")
+
+#ROC-curve using pROC library
+library(pROC)
+
+roc_score=roc(test_data$label, Logistic_predictions) #AUC score
+plot(roc_score ,main ="ROC curve -- Logistic Regression ")
+
+# threshold for converting the probability into label
+threshold = coords(roc_score, "best", ret = "threshold")$threshold
+
+
+test_data["logit_prediction"] = ifelse(Logistic_predictions >= threshold, 1, 0) # convert labels to 0/1 binary values
+test_data["label_num"] = ifelse(test_data$label == "malignant", 1, 0) # convert labels to 0/1 binary values
+
+logit_CM <-confusionMatrix(data = as.factor(test_data$logit_prediction), 
+                                    reference = as.factor(test_data$label_num))
+
+Accuracy_logistic <-round(logit_CM$overall[1],2)
+
+cat(paste("Accuracy of the logistic regression ", Accuracy_logistic))
+```
+
+
+```{r}
+# 2. Decision tree
+Decision_model <- rpart(label ~ ., data = train_data[,2:11])
+summary(Decision_model )
+
+Decision_predictions <- predict(Decision_model, newdata = test_data, type = "vector")
+
+test_data["Dtree_prediction"] = ifelse(Decision_predictions == 2, 1, 0) # convert labels to 0/1 binary values
+
+DTree_CM <-confusionMatrix(data = as.factor(test_data$Dtree_prediction), 
+                                    reference = as.factor(test_data$label_num))
+
+Accuracy_Dtree <-round(DTree_CM$overall[1],2)
+
+cat(paste("Accuracy of the Decision tree ", Accuracy_Dtree))
+
+```
+
+
+```{r}
+# 3. Random forest
+library("randomForest")
+RF_model <- randomForest(label ~ ., data = train_data[,2:11], ntree = 500, mtry = 8, type="classification", test = test_data)
+RF_predictions <- predict(RF_model, newdata = test_data[,2:10], type = "class")
+
+test_data["RF_prediction"] = ifelse(RF_predictions == "malignant", 1, 0) # convert labels to 0/1 binary values
+
+RF_CM <-confusionMatrix(data = as.factor(test_data$RF_prediction), 
+                                    reference = as.factor(test_data$label_num))
+
+Accuracy_RF <-round(RF_CM$overall[1],2)
+
+cat(paste("Accuracy of the Random Forest ", Accuracy_RF))
+
+
+```
+
+
+```{r}
+# 4. Support vector machine (SVM)
+library("e1071")
+SVM_model <- svm(label ~ ., data = train_data[,2:11])
+SVM_predictions <- predict(SVM_model, newdata = test_data[,2:10])
+
+test_data["SVM_prediction"] = ifelse(SVM_predictions == "malignant", 1, 0) # convert labels to 0/1 binary values 
+
+SVM_CM <-confusionMatrix(data = as.factor(test_data$SVM_prediction), 
+                                    reference = as.factor(test_data$label_num))
+
+Accuracy_SVM <-round(SVM_CM$overall[1],2)
+
+cat(paste("Accuracy of the Support Vector Machine ", Accuracy_SVM))
+```
+
+```{r}
+# Ensemble the predictions from the 4 classifiers 
+ensemble_vote = function(df, type){
+                ensemble_prediction = rep(0,nrow(df))
+                    if(type == 'weighted'){
+                        # Accuracy of logit model
+                        logit_CM <-confusionMatrix(data = as.factor(df$logit_prediction), 
+                                    reference = as.factor(df$label_num))
+                        Accuracy_logistic <-round(logit_CM$overall[1],2)
+                        
+                        # Accuracy of Dtree model 
+                        DTree_CM <-confusionMatrix(data = as.factor(df$Dtree_prediction), 
+                                    reference = as.factor(df$label_num))
+                        Accuracy_Dtree <-round(DTree_CM$overall[1],2)
+                        
+                        # Accuracy of RF model 
+                        RF_CM <-confusionMatrix(data = as.factor(df$RF_prediction), 
+                                    reference = as.factor(df$label_num))
+                        Accuracy_RF <-round(RF_CM$overall[1],2)
+                        
+                        # Accuracy of SVM model 
+                        SVM_CM <-confusionMatrix(data = as.factor(df$SVM_prediction), 
+                                    reference = as.factor(df$label_num))
+                        Accuracy_SVM <-round(SVM_CM$overall[1],2)
+                        
+                      # compute the ensemble prediction using average method
+                      for(row in 1:nrow(df)){
+                        x1 = df$logit_prediction[row]
+                        x2 = df$Dtree_prediction[row]
+                        x3 = df$RF_prediction[row]
+                        x4 = df$SVM_prediction[row]
+                        weighted_pred = (Accuracy_logistic*x1 + Accuracy_Dtree*x2 + Accuracy_RF*x3 + Accuracy_SVM*x4)
+                        sum_weights = (Accuracy_logistic + Accuracy_Dtree + Accuracy_RF + Accuracy_SVM)
+                        mean = weighted_pred/sum_weights
+                        e_pred <- ifelse(mean >= 0.5, 1, 0) # convert labels to 0/1 binary values
+                        ensemble_prediction[row] = e_pred
+                      }
+                    }
+  
+                    if(type == 'unweighted'){
+                      # compute the ensemble prediction using average method
+                      for(row in 1:nrow(df)){
+                        x1 = df$logit_prediction[row]
+                        x2 = df$Dtree_prediction[row]
+                        x3 = df$RF_prediction[row]
+                        x4 = df$SVM_prediction[row]
+                        sum_pred = (x1 + x2 + x3 + x4)
+                        count = 4
+                        mean = sum_pred/count
+                        e_pred <- ifelse(mean >= 0.5, 1, 0) # convert labels to 0/1 binary values
+                        ensemble_prediction[row] = e_pred
+                      }
+                    }
+                
+                   return(ensemble_prediction)
+                    
+                }
+ 
+```
+
+
+
+
+```{r}
+test_data["ensemble_weighted"] = ensemble_vote(test_data,"weighted")
+test_data["ensemble_unweighted"] = ensemble_vote(test_data,"unweighted")
+
+Ensemble_CM <-confusionMatrix(data = as.factor(test_data$ensemble_weighted), 
+                                    reference = as.factor(test_data$label_num))
+
+Accuracy_ensemble <-round(Ensemble_CM$overall[1],2)
+
+```
+
+
+```{r}
+# Print the accuracies of the four classifiers
+cat("Logistic regression accuracy:", Accuracy_logistic, "\n")
+cat("Decision tree accuracy:", Accuracy_Dtree, "\n")
+cat("Random forest accuracy:", Accuracy_RF, "\n")
+cat("SVM accuracy:", Accuracy_SVM, "\n")
+cat("Ensemble weighted accuracy:", Accuracy_ensemble, "\n")
+```
